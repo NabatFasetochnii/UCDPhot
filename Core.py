@@ -33,7 +33,7 @@ class Core(object):
         # Data = hdulist[0].data.copy()
         hdulist.verify('fix')
         hdulist.close()
-        # Info = Get_Info(Header) TODO make get_info
+        # Info = Get_Info(Header)
 
     def get_info(self, Header):
         Ra = Header['ALPHA'].split(' ')      # ALPHA, RA, CRVAL, OBJCTRA

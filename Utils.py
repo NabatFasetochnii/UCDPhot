@@ -96,21 +96,21 @@ def get_header_info(header):
 
 
 def get_center(data):
-    ##read file, copy data and header
+    #  read file, copy data and header
     # hdulist = fits.open(path)
     # # Header = hdulist[0].header.copy()
     # data = hdulist[0].data
     # hdulist.verify('fix')
 
-    ##gaussian convolution
+    #  gaussian convolution
     kernel = Gaussian2DKernel(x_stddev=1)
     data = convolve(data, kernel)
 
-    ##extract background
+    #  extract background
     data -= np.median(data)
     Bkg_sigma = mad_std(data)
 
-    ##mask bad row
+    #  mask bad row
     mask = np.zeros(data.shape, dtype=bool)
     mask[90:110, 0:data.shape[1]] = True
 
@@ -162,67 +162,3 @@ def centroid(R1, R2, R3, arr):
     Y = np.sum(masked * Y_index[:, None]) / total
     return X - arr.shape[1] / 2, Y - arr.shape[0] / 2, MSky
 
-
-##################################################################
-# D2 moffat fitter
-def D2_moffat_full(A, B, C, D, E, F, x0, y0):  # B=1/sigma_x^2, C=1/sigma_y^2, E=beta
-    try:
-        return moff(A, B, C, D, E, F, x0, y0)
-    except Exception as e:
-        print('except in moffat_full ', e)
-        return None
-
-
-# read for correction of invalid value encountered in power
-# http://stackoverflow.com/questions/16990664/scipy-minimize-uses-a-nonetype
-
-
-####################################################################
-# def D2_gauss(A, B, C, D, x0, y0):
-#     return lambda y,x: A*np.exp(-(((x0-x)/B)**2 +((y0-y)/C)**2)/2) + D
-##################################################################
-
-
-def D2_moffat_fitter(ROI, MSKY, x_coo, y_coo, R3):
-    x0 = x_coo - np.floor(x_coo) + R3
-    y0 = y_coo - np.floor(y_coo) + R3
-
-    #     try:
-    #  moffat
-    params = (ROI.max(), 0.3, 0.3, 0.1, 5.0, MSKY, x0, y0)
-    errorfunction = lambda p: ravel(D2_moffat_full(*p)(*indices(ROI.shape)) - ROI)
-    p, success = optimize.leastsq(errorfunction, params, maxfev=1000, ftol=0.05)
-
-    return p[1], p[2], p[3], p[4], p[5]  # , w
-
-
-def moff(A, B, C, D, E, F, x0, y0):
-    return lambda y, x: A * (1 + ((x - x0) * B) ** 2. +
-                             ((y - y0) * C) ** 2. + ((x - x0) * (y - y0) * (D ** 2.))) ** (-E) + F
-
-
-def get_PSF(data, XY_coo, fwhm):
-    PSF_model = []
-    R1 = np.ceil(fwhm)  # estimation of aperture radii
-    R2 = np.ceil(fwhm * 3.)  # sky annulus inner radii
-    R3 = np.ceil(fwhm * 6.)  # sky annulus outer radii
-
-    for ii in range(0, len(XY_coo)):  # for every star from coo file
-        x_coo = XY_coo[ii, 0]
-        y_coo = XY_coo[ii, 1]
-        ROI = np.copy(data[int(y_coo - R3):int(y_coo + R3), int(x_coo - R3):int(x_coo + R3)])  # copy small area
-        offset = centroid(R1, R2, R3, ROI)  # search centroid, Gauss sigma and mean sky
-
-        if np.isnan(offset[0]) is False and np.isnan(offset[1]) is False:
-            x_coo = x_coo + offset[0]
-            y_coo = y_coo + offset[1]
-            MSKY = offset[2]
-            ROI = np.copy(data[int(y_coo - R3):int(y_coo + R3), int(x_coo - R3):int(x_coo + R3)])
-            param = D2_moffat_fitter(ROI, MSKY, x_coo, y_coo, R3)  # fit 2D moffat psf
-            if param is not None:
-                PSF_model.append(param)
-        else:
-            pass
-    PSF_model = np.asarray(PSF_model)
-    PSF_model = np.median(PSF_model, 0)
-    return PSF_model

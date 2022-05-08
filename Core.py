@@ -7,7 +7,7 @@ from astropy.io import ascii
 from astropy.stats import SigmaClip
 from astropy.wcs import WCS
 from photutils import Background2D, \
-    MedianBackground, CircularAperture, aperture_photometry
+    MedianBackground, CircularAperture, aperture_photometry, centroids
 from tqdm import tqdm
 
 from Utils import *
@@ -190,7 +190,14 @@ class UCDPhot(object):
 
                 image_data = image_data - background_object.background
                 signal_sky = background_object.background_rms_median
-                apertures_object = [CircularAperture(stars, r=r) for r in self.pars["apertures"]]
+
+                stars_centroids = centroids.centroid_sources(image_data,
+                                                             xpos=stars[:, 0],
+                                                             ypos=stars[:, 1],
+                                                             box_size=self.pars["search_box"])
+
+                apertures_object = [CircularAperture(np.vstack((stars_centroids[0], stars_centroids[1])).T, r=r)
+                                    for r in self.pars["apertures"]]
 
                 phot_table = aperture_photometry(image_data, apertures_object)
                 flux = []

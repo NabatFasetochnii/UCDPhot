@@ -2,12 +2,10 @@ import shutil
 from datetime import datetime
 
 import astropy.io.fits as fits
-from astropy import units
 from astropy.io import ascii
 from astropy.stats import SigmaClip
 from astropy.wcs import WCS
-from photutils import Background2D, \
-    MedianBackground, CircularAperture, aperture_photometry, centroids
+from photutils import Background2D, MedianBackground, CircularAperture, aperture_photometry, centroids
 from tqdm import tqdm
 
 from Utils import *
@@ -23,10 +21,10 @@ class UCDPhot(object):
         "mag_lim": "Maximum magnitude limit",
         'max_mag': 'max_mag',
         # Only stars brighter than mag_lim are included
-        # "image_edge": "Images edge",
+        "image_edge": "Images edge",
 
         "aperture": "Aperture radius",
-        # "search_box": "Centroid search box",
+        "search_box": "Centroid search box",
         "gain": "CCD gain",
         "ron": "CCD readout noise",
 
@@ -41,30 +39,22 @@ class UCDPhot(object):
     def __init__(self, path2data, **kwargs):
 
         self.pars = {"filter": kwargs.get("filter", "J"),
-                     "apertures": kwargs.get("apertures", [8, 10, 12, 15]),
+                     "apertures": kwargs.get("apertures", [15, 20, 25]),
                      'saturation': kwargs.get("saturation", 58000),
                      "path2data": path2data,
-                     'mag_lim': kwargs.get("mag_lim", 20),  # ?
-                     'max_mag': kwargs.get("max_mag", 9),  # ?
+                     'mag_lim': kwargs.get("mag_lim", 20),
+                     'max_mag': kwargs.get("max_mag", 9),
                      "gain": kwargs.get("gain", 2.18),
                      "ron": kwargs.get("ron", 0.02),
                      "mmd": kwargs.get("mmd", 2.0),
                      "isr": kwargs.get("isr", 5),
                      "msr": kwargs.get("msr", 30),
                      "std_lim": kwargs.get("std_lim", 3),
-                     "fop": kwargs.get("fop", 4.6),  # ?
+                     "fop": kwargs.get("fop", 4.6),
                      'cat': 'II/246',
                      "image_edge": kwargs.get("image_edge", 100),
                      "search_box": kwargs.get("search_box", 15),
                      'astrometry.net_API': 'hipfhzhlzygnlvix'}
-
-        # self.path2coo = 'GAIA'  # 'UCAC'
-        # self.saturation = 58000  #
-        # self.FWHM_e = 2.0  # ?
-        # # self.gain = 2.18  #
-        # # self.read_noise = 0.02  #
-        # self.mag_lim = 18.  # ?
-        # self.max_mag = 9.  # ?
 
         # make data paths
         if path2data[-1] == '/':
@@ -73,11 +63,6 @@ class UCDPhot(object):
             self.pars['path2save'] = path2data + '_report'
         if not os.path.exists(self.pars['path2save']):
             os.makedirs(self.pars['path2save'])
-
-        # self.pars["ext_catalog"] = kwargs.get("ext_catalog", "II/336")
-        # self.pars["image_edge"] = kwargs.get("image_edge", 100)
-
-        # self.log_pars()
 
     def log_pars(self):
         now = datetime.now()
@@ -196,10 +181,11 @@ class UCDPhot(object):
                                                              ypos=stars[:, 1],
                                                              box_size=self.pars["search_box"])
 
-                apertures_object = [CircularAperture(np.vstack((stars_centroids[0], stars_centroids[1])).T, r=r)
-                                    for r in self.pars["apertures"]]
-
-                phot_table = aperture_photometry(image_data, apertures_object)
+                apertures_objects = [CircularAperture(np.vstack((stars_centroids[0], stars_centroids[1])).T, r=r)
+                                     for r in self.pars["apertures"]]
+                # aper_stat = ApertureStats(image_data, apertures_objects[-1])
+                # print('\nfwhm = ', aper_stat.fwhm[0])
+                phot_table = aperture_photometry(image_data, apertures_objects)
                 flux = []
                 mag = []
                 mag_err = []
@@ -281,114 +267,20 @@ class UCDPhot(object):
             np.savetxt(self.pars['path2save'] + f'/Mag{i}.txt', out_mag[:, i], fmt='%.4f', delimiter='\t')
             np.savetxt(self.pars['path2save'] + f'/Mag_err{i}.txt', out_merr[:, i], fmt='%.4f', delimiter='\t')
 
-    def diff_photometry(self):
+    def draw_curve(self):
         from matplotlib import pyplot as plt
         from astropy.time import Time as aTime
-        catalog = np.genfromtxt(self.pars['path2save'] + '/Cat.txt', skip_header=1,
-                                names=['ID', 'Ra', 'Dec', 'Dist', 'J'])
         time = ascii.read(self.pars['path2save'] + '/Time.txt', delimiter='\t')
         zero = int(time['BJD_TDB'][0])
-
-        # list of paths to fits
-        image_list = get_image_list(self.pars['path2data'], self.pars['filter'])
-
-        images_number = len(image_list)
-        stars_number = len(catalog)
-        for i in tqdm(range(len(self.pars["apertures"]))):
-            # flux = np.genfromtxt(self.pars['path2save'] + f'/Flux{i}.txt')
+        for i in range(len(self.pars["apertures"])):
             raw_magn = np.genfromtxt(self.pars['path2save'] + f'/Mag{i}.txt')
             raw_merr = np.genfromtxt(self.pars['path2save'] + f'/Mag_err{i}.txt')
-
-            counter_success = 0
-
-            clr_magn = np.zeros((images_number, stars_number))
-            clr_merr = np.zeros((images_number, stars_number))
-
-            catalog_stars = coord.SkyCoord(ra=catalog["Ra"], dec=catalog["Dec"], unit=units.deg, frame="icrs")
-
-            for target_star_index in tqdm(range(stars_number)):
-                if np.isfinite(raw_magn[:, target_star_index]).any():
-
-                    ens_stars_indexes = []
-                    stars_goodness = [True for _ in range(stars_number)]
-                    search_radius = self.pars["isr"]
-                    # noinspection PyUnresolvedReferences
-                    target_star = coord.SkyCoord(ra=catalog[target_star_index]["Ra"] * units.deg,
-                                                 dec=catalog[target_star_index]["Dec"] * units.deg,
-                                                 frame="icrs")
-
-                    while len(ens_stars_indexes) < 10 and search_radius <= self.pars["msr"]:
-                        # noinspection PyUnresolvedReferences
-                        ens_stars_indexes = np.where(target_star.separation(catalog_stars) <
-                                                     (search_radius * units.arcmin))[0]
-
-                        check_index = 0
-                        while check_index < len(ens_stars_indexes):
-                            # if check_star is target_star or check_star is "all-NaN" or "not good"
-                            # or has too different magnitude:
-                            # delete check_star from ensemble
-                            if ens_stars_indexes[check_index] == target_star_index or \
-                                    np.isnan(raw_magn[:, check_index]).all() or \
-                                    not stars_goodness[ens_stars_indexes[check_index]] or \
-                                    np.absolute(np.nanmean(raw_magn[:, target_star_index]) -
-                                                np.nanmean(raw_magn[:, ens_stars_indexes[check_index]]) >
-                                                self.pars["msr"]):
-                                ens_stars_indexes = np.delete(ens_stars_indexes, check_index)
-                            else:
-                                check_index += 1
-
-                        if len(ens_stars_indexes) < 10:
-                            search_radius += 1
-                            stars_goodness = [True for _ in range(stars_number)]
-                            continue
-
-                        ens_stars_magn = np.zeros((images_number, len(ens_stars_indexes)))
-                        ens_stars_merr = np.zeros((images_number, len(ens_stars_indexes)))
-                        for _ in range(len(ens_stars_indexes)):
-                            ens_stars_magn[:, _] = raw_magn[:, ens_stars_indexes[_]]
-                            ens_stars_merr[:, _] = raw_merr[:, ens_stars_indexes[_]]
-
-                        eca_image_weight = np.ones(len(ens_stars_indexes)) / np.nanmean(np.square(ens_stars_merr),
-                                                                                        axis=0)
-                        eca_mean_image_magn = np.nansum(ens_stars_magn * eca_image_weight,
-                                                        axis=1) / np.nansum(eca_image_weight)
-
-                        eca_correction = eca_mean_image_magn - np.nanmean(eca_mean_image_magn)
-                        ens_stars_magn -= eca_correction.reshape((-1, 1))
-
-                        eca_std = np.nanstd(ens_stars_magn, axis=0)
-                        if np.max(eca_std) > self.pars["std_lim"]:
-                            stars_goodness[ens_stars_indexes[np.argmax(eca_std)]] = False
-                            ens_stars_indexes = []
-                            continue
-                        else:
-                            clr_magn[:, target_star_index] = raw_magn[:, target_star_index] - eca_correction
-                            clr_merr[:, target_star_index] = np.sqrt(
-                                (1 / np.nansum(1 / np.square(ens_stars_merr), axis=1))
-                                + np.square(raw_merr[:, target_star_index]))
-                            counter_success += 1
-
-                    if len(ens_stars_indexes) < 10:
-                        clr_magn[:, target_star_index] = np.nan
-                        clr_merr[:, target_star_index] = np.nan
-                else:
-                    # It would be better to just outright delete
-                    # 'all-NaN' stars so I don't have to worry about them later
-                    # But I don't have neither time nor will to worry about it right now
-
-                    clr_magn[:, target_star_index] = np.nan
-                    clr_merr[:, target_star_index] = np.nan
-                    continue
-
-            np.savetxt(self.pars['path2save'] + f'/clr_mag{i}.txt', clr_magn, fmt='%.4f', delimiter='\t')
-            np.savetxt(self.pars['path2save'] + f'/clr_merr{i}.txt', clr_merr, fmt='%.4f', delimiter='\t')
+            std = np.nanstd(raw_magn)
 
             fig, ax = plt.subplots(1, 1, figsize=(10, 6), dpi=125)  # 3, 1, figsize=(6, 7), dpi=125
             r = self.pars['apertures'][i]
-            fig.suptitle(f'Target, radius aperture = {r}', fontsize=8)
-            ax.errorbar(time['BJD_TDB'] - zero, clr_magn[:, 0], clr_merr[:, 0], fmt='b.', markersize=3, zorder=3,
-                        linewidth=0.5, label='Data')
-            ax.errorbar(time['BJD_TDB'] - zero, raw_magn[:, 0], raw_merr[:, 0], fmt='r.', markersize=3, zorder=2,
+            fig.suptitle(f'Target, radius aperture = {r}, std = {std}', fontsize=8)
+            ax.errorbar(time['BJD_TDB'] - zero, raw_magn[:, 0], raw_merr[:, 0], fmt='b.', markersize=3, zorder=2,
                         linewidth=0.5, label='Raw data')
             ax.legend(fontsize=6)
             locs = ax.get_xticks()
@@ -400,6 +292,7 @@ class UCDPhot(object):
             ax.set_xticklabels(x_ticks_labels, fontsize=5)
             ax.set_xlabel('BJD_TDB - ' + str(zero), fontsize=6)
             ax.set_ylabel('mag')
+            ax.invert_yaxis()
             ax.tick_params(axis='both', labelsize=6, direction='in')
             ax.grid()
             # plt.show()

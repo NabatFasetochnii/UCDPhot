@@ -3,7 +3,7 @@ from datetime import datetime
 
 import astropy.io.fits as fits
 from astropy.io import ascii
-from astropy.stats import SigmaClip
+from astropy.stats import SigmaClip, sigma_clipped_stats
 from astropy.wcs import WCS
 from photutils import Background2D, MedianBackground, CircularAperture, aperture_photometry, centroids
 from tqdm import tqdm
@@ -78,6 +78,7 @@ class UCDPhot(object):
             print("New set of parameters is loaded:")
 
     def aperture_photometry(self):
+
         # list of paths to fits
         images_paths = get_image_list(self.pars['path2data'], self.pars['filter'])
 
@@ -120,8 +121,8 @@ class UCDPhot(object):
         # open log file
         df = open(self.pars['path2save'] + '/Time.txt', 'w')
         df.write('DATE-OBS\tJD\tHJD\tBJD_TDB\t' +
-                 'EXPTIME\tFILTER\tTEMP_SKY\t' +
-                 'TEMP_AIR\tpressure\t' +
+                 'EXPTIME\tFILTER\tAIRMASS\tTEMP_SKY\t' +
+                 'TEMP_AIR\tPRESSURE\t' +
                  'X_Shift\tY_Shift\n')
         with tqdm(total=len(images_paths), desc='aperture_photometry') as bar:
             print()
@@ -138,6 +139,7 @@ class UCDPhot(object):
                 df.write('{:.7f}'.format(info[5]) + '\t' + '{:.7f}'.format(info[6]) + '\t')  # HJD BJD
                 df.write('{:.1f}'.format(header['EXPTIME']) + '\t')  # EXPTIME
                 df.write(header['FILTER'] + '\t')  # FILTER
+                df.write('{:.7f}'.format(info[7]) + '\t')  # airmass
                 df.write('{:.1f}'.format(header['TEMP_SKY']) + '\t')  # TEMP_SKY
                 df.write('{:.1f}'.format(header['TEMP_AIR']) + '\t')  # TEMP_AIR
                 df.write('{:.1f}'.format(header['PRESS']) + '\t')  # pressure
@@ -224,37 +226,6 @@ class UCDPhot(object):
                 #                       list(result_tub['flux_unc'])])
                 # flux.append(list(result_tub['flux_fit']))
 
-                # # draw a picture
-                # Image = np.log10(image_data)
-                # X = Image.shape[1]
-                # Y = Image.shape[0]
-                # _mean, _median, _std = sigma_clipped_stats(Image[Y - 50:Y + 50, X - 50:X + 50])
-                # _max = _median + 10. * _std
-                # _min = _median - 1. * _std
-                # fig = plt.figure(figsize=(7, 7), frameon=False)
-                # ax = plt.subplot(projection=wcs_object, position=[0.1, 0.1, 0.8, 0.8])
-                # plt.imshow(Image, vmin=_min, vmax=_max, cmap='gray_r')
-                #
-                # coor = np.vstack((result_tub['x_fit'], result_tub['y_fit'])).T
-                # # aper_old = CircularAperture(psf_stars, r=10)
-                # # aper_old.plot(color='red', lw=1.5, alpha=0.5)
-                # aper = CircularAperture(coor, r=10)
-                # aper.plot(color='blue', lw=1.5, alpha=0.5)
-                # for i in range(0, len(psf_stars)):
-                #     plt.text(psf_stars[i, 0], psf_stars[i, 1], s=catalog['ID'][i], color='blue', alpha=0.8)
-                # if header['CD1_1'] > 0:
-                #     plt.gca().invert_xaxis()
-                # if header['CD2_2'] > 0:
-                #     plt.gca().invert_yaxis()
-                # plt.title(target + ', filter ' + header['FILTER'] + '\n' + header['DATE-OBS'])
-                # ax.coords[1].set_ticklabel(rotation=90)
-                # ax.coords[0].set_major_formatter('hh:mm:ss')
-                # ax.coords[1].set_major_formatter('dd:mm:ss')
-                # ax.coords[0].set_axislabel('RA')
-                # ax.coords[1].set_axislabel('Dec')
-                # ax.coords.grid(color='blue', ls='--', alpha=0.7)
-                # # plt.show()
-                # fig.savefig('field.pdf')
                 bar.update(1)
             bar.close()
             df.close()
@@ -270,33 +241,92 @@ class UCDPhot(object):
     def draw_curve(self):
         from matplotlib import pyplot as plt
         from astropy.time import Time as aTime
-        time = ascii.read(self.pars['path2save'] + '/Time.txt', delimiter='\t')
+        import json
+
+        with open('2020-09-12.json', 'r') as read_f:
+            water_data = json.load(read_f)['results'][0]['series'][0]['values']
+            water_data = np.array(water_data).T
+        time = ascii.read(self.pars['path2save'] + '/Time.txt', delimiter='\t', fast_reader=False, guess=False)
         zero = int(time['BJD_TDB'][0])
         for i in range(len(self.pars["apertures"])):
             raw_magn = np.genfromtxt(self.pars['path2save'] + f'/Mag{i}.txt')
             raw_merr = np.genfromtxt(self.pars['path2save'] + f'/Mag_err{i}.txt')
             std = np.nanstd(raw_magn)
 
-            fig, ax = plt.subplots(1, 1, figsize=(10, 6), dpi=125)  # 3, 1, figsize=(6, 7), dpi=125
+            fig, ax = plt.subplots(3, 1, figsize=(6, 7), dpi=125)  # 3, 1, figsize=(6, 7), dpi=125
             r = self.pars['apertures'][i]
             fig.suptitle(f'Target, radius aperture = {r}, std = {std}', fontsize=8)
-            ax.errorbar(time['BJD_TDB'] - zero, raw_magn[:, 0], raw_merr[:, 0], fmt='b.', markersize=3, zorder=2,
-                        linewidth=0.5, label='Raw data')
-            ax.legend(fontsize=6)
-            locs = ax.get_xticks()
+            ax[0].errorbar(time['BJD_TDB'] - zero, raw_magn[:, 0], raw_merr[:, 0], fmt='b.', markersize=3, zorder=2,
+                           linewidth=0.5, label='Raw data')
+            ax[1].plot(time['BJD_TDB'] - zero, time['AIRMASS'])
+            ax[1].set_ylabel('airmass', fontsize=6)
+            ax[2].plot(time['BJD_TDB'] - zero, time['X_Shift'] - np.mean(time['X_Shift']), 'r.', label='X Shift')
+            ax[2].plot(time['BJD_TDB'] - zero, time['Y_Shift'] - np.mean(time['Y_Shift']), 'b.', label='Y Shift')
+            ax[2].legend(loc=0, fontsize=6)
+            ax[2].set_ylabel('shift (pix)', fontsize=6)
+            ax[0].legend(fontsize=6)
+            locs = ax[0].get_xticks()
             t = aTime(locs, format='jd')
             x_ticks_labels = []
             for x in t:
                 x_ticks_labels.append(str('{:.2f}'.format(x.tdb.jd)))
 
-            ax.set_xticklabels(x_ticks_labels, fontsize=5)
-            ax.set_xlabel('BJD_TDB - ' + str(zero), fontsize=6)
-            ax.set_ylabel('mag')
-            ax.invert_yaxis()
-            ax.tick_params(axis='both', labelsize=6, direction='in')
-            ax.grid()
+            ax[0].set_xticklabels(x_ticks_labels, fontsize=5)
+            ax[0].set_xlabel('BJD_TDB - ' + str(zero), fontsize=6)
+            ax[0].set_ylabel('mag')
+            ax[0].invert_yaxis()
+            ax[0].tick_params(axis='both', labelsize=6, direction='in')
+            ax[0].grid()
             # plt.show()
             plt.savefig(self.pars['path2save'] + f'/plot{i}.pdf')
+
+    def plot_field(self):
+        from matplotlib import pyplot as plt
+        images_paths = get_image_list(self.pars['path2data'], self.pars['filter'])
+        hdul = fits.open(self.pars['path2data'] + '/' + images_paths[0])
+        header = hdul[0].header
+        hdul.verify('fix')
+        image_data = hdul[0].data
+
+        # make WCS object
+        wcs_object = WCS(header)
+
+        hdul.close()
+
+        catalog = np.genfromtxt(self.pars['path2save'] + '/Cat.txt', skip_header=1,
+                                names=['ID', 'Ra', 'Dec', 'Dist', 'J'])
+        stars_xy_coords = wcs_object.all_world2pix(catalog['Ra'], catalog['Dec'], 0)
+        # # draw a picture
+        Image = np.log10(image_data)
+        X = Image.shape[1]
+        Y = Image.shape[0]
+        _mean, _median, _std = sigma_clipped_stats(Image[Y - 50:Y + 50, X - 50:X + 50])
+        _max = _median + 10. * _std
+        _min = _median - 1. * _std
+        fig = plt.figure(figsize=(7, 7), frameon=False)
+        ax = plt.subplot(projection=wcs_object, position=[0.1, 0.1, 0.8, 0.8])
+        plt.imshow(Image, vmin=_min, vmax=_max, cmap='gray_r')
+
+        stars_xy_coords = np.vstack((stars_xy_coords[0], stars_xy_coords[1])).T
+
+        aper = CircularAperture(stars_xy_coords, r=10)
+        aper.plot(color='blue', lw=1.5, alpha=0.5)
+        for i in range(0, len(catalog)):
+            plt.text(x=stars_xy_coords[i, 0], y=stars_xy_coords[i, 1], s=catalog['ID'][i], color='blue', alpha=0.8)
+        if header['CD1_1'] > 0:
+            plt.gca().invert_xaxis()
+        if header['CD2_2'] > 0:
+            plt.gca().invert_yaxis()
+        plt.title(header['TARNAME'] + ', filter ' + header['FILTER'] + '\n' + header['DATE-OBS'])
+        ax.coords[1].set_ticklabel(rotation=90)
+        ax.coords[0].set_major_formatter('hh:mm:ss')
+        ax.coords[1].set_major_formatter('dd:mm:ss')
+        ax.coords[0].set_axislabel('RA')
+        ax.coords[1].set_axislabel('Dec')
+        ax.coords.grid(color='blue', ls='--', alpha=0.7)
+        # ax.plot()
+        # plt.show()
+        fig.savefig('field.pdf')
 
     def do_astrometry(self, **kwargs):
         from astroquery.astrometry_net import AstrometryNet

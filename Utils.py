@@ -13,25 +13,9 @@ from astropy.time import Time, TimeDelta
 from astroquery.vizier import Vizier
 from numpy import arange
 from photutils.detection import DAOStarFinder
-from pylab import indices
-from pylab import ravel
-from scipy import optimize
+from PySysRem import sysrem
 
 warnings.simplefilter("ignore")
-
-
-# def PSF2FWHM(PSF_model):
-#     try:
-#         phi = np.arctan((PSF_model[2] ** 2.0) / (PSF_model[0] ** 2.0 - PSF_model[1] ** 2.0)) / 2.0
-#         alpha1 = np.sqrt(
-#             2.0 / (PSF_model[0] ** 2.0 + PSF_model[1] ** 2.0 + PSF_model[2] ** 2.0 / np.sin(2.0 * phi)))
-#         alpha2 = np.sqrt(np.fabs(1 / (PSF_model[0] ** 2.0 + PSF_model[1] ** 2.0 - 1.0 / (alpha1 ** 2.0))))
-#         fwhm1 = 2.0 * alpha1 * np.sqrt(2.0 ** (1.0 / (PSF_model[3])) - 1.0)
-#         fwhm2 = 2.0 * alpha2 * np.sqrt(2.0 ** (1.0 / (PSF_model[3])) - 1.0)
-#         return fwhm1, fwhm2, phi, PSF_model[4]
-#     except:
-#         print('Wrong PSF model')
-#         return 0., 0., 0., 0.
 
 
 def get_2mass(ra, dec, r, j_lim, cat):
@@ -71,7 +55,6 @@ def get_image_list(image_dir, image_filter):
 
 
 def get_header_info(header):
-
     ra = Angle(header['CURRA'] + ' hours')
     dec = Angle(header['CURDEC'] + ' degrees')
 
@@ -86,13 +69,17 @@ def get_header_info(header):
     site = coord.EarthLocation.from_geodetic(lon=header['LONGITUD'],
                                              lat=header['LATITUD'], height=header['ELEVAT'])
 
+    frame = coord.AltAz(obstime=t, location=site)
+    obj_frame = obj.transform_to(frame)
+    airmass = obj_frame.secz.value
+
     helio = t.light_travel_time(obj, 'heliocentric', location=site)
     hjd = t + helio
 
     bary = t.light_travel_time(obj, location=site)
     bjd = t + bary
 
-    return ra.degree, dec.degree, x_pix, y_pix, t, hjd.jd, bjd.tdb.jd
+    return ra.degree, dec.degree, x_pix, y_pix, t, hjd.jd, bjd.tdb.jd, airmass
 
 
 def get_center(data):
@@ -161,4 +148,3 @@ def centroid(R1, R2, R3, arr):
     X = np.sum(masked * X_index[None, :]) / total
     Y = np.sum(masked * Y_index[:, None]) / total
     return X - arr.shape[1] / 2, Y - arr.shape[0] / 2, MSky
-

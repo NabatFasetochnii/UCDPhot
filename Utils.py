@@ -13,7 +13,6 @@ from astropy.time import Time, TimeDelta
 from astroquery.vizier import Vizier
 from numpy import arange
 from photutils.detection import DAOStarFinder
-from PySysRem import sysrem
 
 warnings.simplefilter("ignore")
 
@@ -82,13 +81,7 @@ def get_header_info(header):
     return ra.degree, dec.degree, x_pix, y_pix, t, hjd.jd, bjd.tdb.jd, airmass
 
 
-def get_center(data):
-    #  read file, copy data and header
-    # hdulist = fits.open(path)
-    # # Header = hdulist[0].header.copy()
-    # data = hdulist[0].data
-    # hdulist.verify('fix')
-
+def get_center(data, mask=None):
     #  gaussian convolution
     kernel = Gaussian2DKernel(x_stddev=1)
     data = convolve(data, kernel)
@@ -98,53 +91,49 @@ def get_center(data):
     Bkg_sigma = mad_std(data)
 
     #  mask bad row
-    mask = np.zeros(data.shape, dtype=bool)
-    mask[90:110, 0:data.shape[1]] = True
+    if not mask:
+        mask = np.zeros(data.shape, dtype=bool)
+        mask[90:110, 0:data.shape[1]] = True  # only for ASTRONIRCAM
 
     daofind = DAOStarFinder(fwhm=4.5, threshold=5. * Bkg_sigma, sharplo=0.25)
     sources = daofind(data, mask=mask)
-    # print(Sources.info)
-
-    # plt.imshow(Data, cmap=cm.Greys_r, aspect='equal',
-    #            norm=Normalize(vmin=-30, vmax=150), interpolation='nearest')
-    # plt.scatter(Sources['xcentroid'], Sources['ycentroid'], s=40, facecolors='none', edgecolors='r')
-    # plt.show()
 
     # Sort sources in ascending order
     sources.sort('flux')
     sources.reverse()
+    # if len(sources) > 30:
+    #     sources = sources[:30]
     return sources
-
 
 ##################################################################
 # calculate center of mass
-def centroid(R1, R2, R3, arr):
-    # total = 0.
-    Ry = arr.shape[0] / 2
-    Rx = arr.shape[1] / 2
-
-    # mask
-    X_index = np.arange(0, arr.shape[1], 1)  # index array
-    Y_index = np.arange(0, arr.shape[0], 1)  # index array
-    distance = np.sqrt(np.power(np.ones(arr.shape) * (X_index[None, :] - Rx), 2) + np.power(
-        np.ones(arr.shape) * (Y_index[:, None] - Ry), 2))  # distance array
-
-    # mean sky
-    annulus_mask = np.copy(distance)
-    annulus_mask[annulus_mask < R2] = 0.
-    annulus_mask[annulus_mask > R3] = 0.
-    annulus_mask[annulus_mask > 0] = 1.
-    masked = arr * annulus_mask
-    MSky = np.median(masked[np.nonzero(masked)])
-    MSky = np.nan_to_num(MSky)
-
-    # centroid
-    # aperture_mask = np.copy(distance)
-    distance[distance <= R1] = 1.
-    distance[distance > R1] = 0.
-    masked = arr * distance
-    total = np.sum(masked)
-
-    X = np.sum(masked * X_index[None, :]) / total
-    Y = np.sum(masked * Y_index[:, None]) / total
-    return X - arr.shape[1] / 2, Y - arr.shape[0] / 2, MSky
+# def centroid(R1, R2, R3, arr):
+#     # total = 0.
+#     Ry = arr.shape[0] / 2
+#     Rx = arr.shape[1] / 2
+#
+#     # mask
+#     X_index = np.arange(0, arr.shape[1], 1)  # index array
+#     Y_index = np.arange(0, arr.shape[0], 1)  # index array
+#     distance = np.sqrt(np.power(np.ones(arr.shape) * (X_index[None, :] - Rx), 2) + np.power(
+#         np.ones(arr.shape) * (Y_index[:, None] - Ry), 2))  # distance array
+#
+#     # mean sky
+#     annulus_mask = np.copy(distance)
+#     annulus_mask[annulus_mask < R2] = 0.
+#     annulus_mask[annulus_mask > R3] = 0.
+#     annulus_mask[annulus_mask > 0] = 1.
+#     masked = arr * annulus_mask
+#     MSky = np.median(masked[np.nonzero(masked)])
+#     MSky = np.nan_to_num(MSky)
+#
+#     # centroid
+#     # aperture_mask = np.copy(distance)
+#     distance[distance <= R1] = 1.
+#     distance[distance > R1] = 0.
+#     masked = arr * distance
+#     total = np.sum(masked)
+#
+#     X = np.sum(masked * X_index[None, :]) / total
+#     Y = np.sum(masked * Y_index[:, None]) / total
+#     return X - arr.shape[1] / 2, Y - arr.shape[0] / 2, MSky

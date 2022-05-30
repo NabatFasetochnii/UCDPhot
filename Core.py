@@ -4,6 +4,7 @@ from datetime import datetime
 import astropy.io.fits as fits
 from astropy.io import ascii
 from astropy.stats import SigmaClip, sigma_clipped_stats
+from astropy.time import Time as aTime
 from astropy.wcs import WCS
 from photutils import Background2D, MedianBackground, CircularAperture, aperture_photometry, centroids
 from tqdm import tqdm
@@ -53,8 +54,7 @@ class UCDPhot(object):
                      "fop": kwargs.get("fop", 4.6),
                      'cat': 'II/246',
                      "image_edge": kwargs.get("image_edge", 100),
-                     "search_box": kwargs.get("search_box", 15),
-                     'astrometry.net_API': 'hipfhzhlzygnlvix'}
+                     "search_box": kwargs.get("search_box", 15)}
 
         # make data paths
         if path2data[-1] == '/':
@@ -77,26 +77,28 @@ class UCDPhot(object):
             print(f"Current date and time\t{now}")
             print("New set of parameters is loaded:")
 
-    def aperture_photometry(self):
+    def aperture_photometry(self, **kwargs):
 
         # list of paths to fits
         images_paths = get_image_list(self.pars['path2data'], self.pars['filter'])
 
-        # read first frame for object name and other information
-        # print(self.pars['path2data'] + '/' + images_paths[0])
-        # hdul = fits.open(self.pars['path2data'] + '/' + images_paths[0])
+        if kwargs['cat_path']:
+            catalog = np.genfromtxt(kwargs['cat_path'], skip_header=1,
+                                    names=['ID', 'Ra', 'Dec', 'Dist', 'J'])
+        else:
+            # read first frame for object name and other information
+            print(self.pars['path2data'] + '/' + images_paths[0])
+            hdul = fits.open(self.pars['path2data'] + '/' + images_paths[0])
+            header = hdul[0].header
+            hdul.verify('fix')
+            # target = header['TARNAME']
+            info = get_header_info(header)
+            # fil = header['FILTER']
+            image_radius = abs(header["CD1_1"]) * ((header["NAXIS1"] ** 2 + header["NAXIS2"] ** 2) ** 0.5) / 2
 
-        # header = hdul[0].header
-        # hdul.verify('fix')
-        # # target = header['TARNAME']
-        # # print(header)
-        # # info = get_header_info(header)
-        # # fil = header['FILTER']
-        # # image_radius = abs(header["CD1_1"]) * ((header["NAXIS1"] ** 2 + header["NAXIS2"] ** 2) ** 0.5) / 2
-        #
-        # hdul.close()
-        # catalog = get_2mass(ra=info[0], dec=info[1], r=image_radius,
-        #                     j_lim=self.pars['mag_lim'], cat=self.pars['cat'])
+            hdul.close()
+            catalog = get_2mass(ra=info[0], dec=info[1], r=image_radius,
+                                j_lim=self.pars['mag_lim'], cat=self.pars['cat'])
         # ra_fix = Angle('0:0:1.3 hours')
         # dec_fix = Angle('0:0:10 degree')
         # catalog['Ra'][0] = catalog['Ra'][0] + ra_fix.degree
@@ -111,9 +113,6 @@ class UCDPhot(object):
         # catalog['Ra'][5] = catalog['Ra'][5] - ra_fix_4.degree
         # catalog['Dec'][5] = catalog['Dec'][5] - dec_fix_4.degree
 
-        catalog = np.genfromtxt(self.pars['path2save'] + '/Cat.txt', skip_header=1,
-                                names=['ID', 'Ra', 'Dec', 'Dist', 'J'])
-
         flux_out_list = []
         mag_out_list = []
         mag_err_list = []
@@ -123,7 +122,7 @@ class UCDPhot(object):
         df.write('DATE-OBS\tJD\tHJD\tBJD_TDB\t' +
                  'EXPTIME\tFILTER\tAIRMASS\tTEMP_SKY\t' +
                  'TEMP_AIR\tPRESSURE\t' +
-                 'X_Shift\tY_Shift\n')
+                 'X_TARGET\tY_TARGET\n')
         with tqdm(total=len(images_paths), desc='aperture_photometry') as bar:
             print()
             for file_path in images_paths:
@@ -143,13 +142,15 @@ class UCDPhot(object):
                 df.write('{:.1f}'.format(header['TEMP_SKY']) + '\t')  # TEMP_SKY
                 df.write('{:.1f}'.format(header['TEMP_AIR']) + '\t')  # TEMP_AIR
                 df.write('{:.1f}'.format(header['PRESS']) + '\t')  # pressure
-                df.write(str(info[2]) + '\t' + str(info[3]) + '\n')  # X_Shift Y_Shift
+                # df.write(str(info[2]) + '\t' + str(info[3]) + '\n')  # X_Shift Y_Shift
 
                 # make WCS object
                 wcs_object = WCS(header)
 
                 # founding xy coords of the stars on frame
                 stars_xy_coords = wcs_object.all_world2pix(catalog['Ra'], catalog['Dec'], 0)
+
+                df.write(str(stars_xy_coords[0][0]) + '\t' + str(stars_xy_coords[1][0]) + '\n')  # X_target Y_target
 
                 bad_stars_x_mask = np.where((stars_xy_coords[0] < self.pars["image_edge"] / 10) |
                                             (stars_xy_coords[0] > (image_data.shape[1] -
@@ -238,47 +239,138 @@ class UCDPhot(object):
             np.savetxt(self.pars['path2save'] + f'/Mag{i}.txt', out_mag[:, i], fmt='%.4f', delimiter='\t')
             np.savetxt(self.pars['path2save'] + f'/Mag_err{i}.txt', out_merr[:, i], fmt='%.4f', delimiter='\t')
 
-    def draw_curve(self):
-        from matplotlib import pyplot as plt
-        from astropy.time import Time as aTime
+    def create_humidity(self, path):
         import json
-
-        with open('2020-09-12.json', 'r') as read_f:
-            water_data = json.load(read_f)['results'][0]['series'][0]['values']
+        with open(path, 'r') as read_f:
+            water_data = json.load(read_f)['results'][0]['series'][0]['values']  # humidity
             water_data = np.array(water_data).T
         time = ascii.read(self.pars['path2save'] + '/Time.txt', delimiter='\t', fast_reader=False, guess=False)
-        zero = int(time['BJD_TDB'][0])
+        time_s = aTime(time['DATE-OBS'])
+        water_time = aTime(water_data[0])
+        water_data = np.float32(water_data[1])
+        humidity = np.interp(time_s.tdb.jd, water_time.tdb.jd, water_data)
+        np.savetxt(self.pars['path2save'] + '/humidity.txt', humidity, fmt='%.1f', delimiter='\t')
+
+    def draw_curve(self):
+        from matplotlib import pyplot as plt
+
+        time = ascii.read(self.pars['path2save'] + '/Time.txt', delimiter='\t', fast_reader=False, guess=False)
+        humidity = np.genfromtxt(self.pars['path2save'] + '/humidity.txt')
+        zero = int(time['JD'][0])
+        date = time['DATE-OBS'][0].split('T')[0]
+        plots_num = 8
+        # sysrem = False
+        # gs_kw = dict(height_ratios=[1.5, 1.5, 1, 0.8, 1, 1, 1.5])
+        gs_kw = dict(height_ratios=[20, 20, 20, 9, 9, 9, 9, 9])
+        # if os.path.exists(f"{self.pars['path2save']}/sysrem/sysrem_out0_0.sys_rem.txt"):
+        #     plots_num = 8
+        #     # gs_kw = dict(width_ratios=[1])
+        #     sysrem = True
         for i in range(len(self.pars["apertures"])):
             raw_magn = np.genfromtxt(self.pars['path2save'] + f'/Mag{i}.txt')
             raw_merr = np.genfromtxt(self.pars['path2save'] + f'/Mag_err{i}.txt')
-            std = np.nanstd(raw_magn)
+            std = np.round(np.nanstd(raw_magn[:, 0]), 4)
 
-            fig, ax = plt.subplots(3, 1, figsize=(6, 7), dpi=125)  # 3, 1, figsize=(6, 7), dpi=125
+            fig, ax = plt.subplots(plots_num, 1, figsize=(6, 10), gridspec_kw=gs_kw,
+                                   sharex=True, sharey=False, dpi=125)
             r = self.pars['apertures'][i]
-            fig.suptitle(f'Target, radius aperture = {r}, std = {std}', fontsize=8)
-            ax[0].errorbar(time['BJD_TDB'] - zero, raw_magn[:, 0], raw_merr[:, 0], fmt='b.', markersize=3, zorder=2,
-                           linewidth=0.5, label='Raw data')
-            ax[1].plot(time['BJD_TDB'] - zero, time['AIRMASS'])
-            ax[1].set_ylabel('airmass', fontsize=6)
-            ax[2].plot(time['BJD_TDB'] - zero, time['X_Shift'] - np.mean(time['X_Shift']), 'r.', label='X Shift')
-            ax[2].plot(time['BJD_TDB'] - zero, time['Y_Shift'] - np.mean(time['Y_Shift']), 'b.', label='Y Shift')
-            ax[2].legend(loc=0, fontsize=6)
-            ax[2].set_ylabel('shift (pix)', fontsize=6)
-            ax[0].legend(fontsize=6)
+
+            fig.suptitle(f'Photometry report. Radius aperture = {r} pix\nObservation date: {date}', fontsize=8)
+            ax[0].errorbar(time['JD'] - zero, raw_magn[:, 0], raw_merr[:, 0], fmt='b.', markersize=3, zorder=2,
+                           linewidth=0.5, label=f'Target, std = {std}')
+            ax[0].set_ylabel('mag', fontsize=6)
+            ax[0].invert_yaxis()
+            for item in range(1, 6):
+                star_std = np.round(np.nanstd(raw_magn[:, item]), 4)
+                if star_std < 0.1:
+                    ax[1].plot(time['JD'] - zero, raw_magn[:, item], '.',
+                               label=f'Star #{item}, std = {star_std}', markersize=3)
+            ax[1].set_ylabel('mag', fontsize=6)
+            ax[1].invert_yaxis()
+
+            # if sysrem:
+            magic = np.genfromtxt(f"{self.pars['path2save']}/sysrem/sysrem_out{i}_0.sys_rem.txt", skip_header=True)
+            magic_std = np.round(np.nanstd(magic[:, 1]), 4)
+            ax[2].errorbar(magic[:, 0] - zero, magic[:, 1], magic[:, 2], fmt='b.', markersize=3, zorder=2,
+                           linewidth=0.5, label=f'Correcting linear systematic effects, std = {magic_std}')
+            ax[2].set_ylabel('mag', fontsize=6)
+            ax[2].invert_yaxis()
+
+            ax[3].plot(time['JD'] - zero, time['AIRMASS'], label='Воздушная масса')
+            ax[3].set_ylabel('airmass', fontsize=6)
+
+            ax[4].plot(time['JD'] - zero, time['X_TARGET'] - np.mean(time['X_TARGET']),
+                       'r.', label='X Shift', markersize=3)
+            ax[4].plot(time['JD'] - zero, time['Y_TARGET'] - np.mean(time['Y_TARGET']),
+                       'b.', label='Y Shift', markersize=3)
+            ax[4].legend(loc=0, fontsize=6)
+            ax[4].set_ylabel('shift (pix)', fontsize=6)
+
+            ax[5].plot(time['JD'] - zero, humidity, label='Относительная влажность, %')
+            ax[5].set_ylabel('Humidity', fontsize=6)
+
+            ax[6].plot(time['JD'] - zero, time['TEMP_AIR'], label='Температура воздуха, \N{DEGREE SIGN}C')
+            ax[6].set_ylabel('T', fontsize=6)
+
+            ax[7].plot(time['JD'] - zero, time['PRESSURE'], label='Давление, мм. рт. ст.')
+            ax[7].set_ylabel('Pressure', fontsize=6)
+
             locs = ax[0].get_xticks()
             t = aTime(locs, format='jd')
             x_ticks_labels = []
             for x in t:
                 x_ticks_labels.append(str('{:.2f}'.format(x.tdb.jd)))
-
-            ax[0].set_xticklabels(x_ticks_labels, fontsize=5)
-            ax[0].set_xlabel('BJD_TDB - ' + str(zero), fontsize=6)
-            ax[0].set_ylabel('mag')
-            ax[0].invert_yaxis()
-            ax[0].tick_params(axis='both', labelsize=6, direction='in')
-            ax[0].grid()
+            for a in ax:
+                a.legend(fontsize=6)
+                a.tick_params(axis='both', labelsize=6, direction='in')
+                a.set_xticklabels(x_ticks_labels, fontsize=5)
+                a.grid()
+            ax[-1].set_xlabel('JD - ' + str(zero), fontsize=6)
             # plt.show()
-            plt.savefig(self.pars['path2save'] + f'/plot{i}.pdf')
+            plt.savefig(self.pars['path2save'] + f'/plot_{date}_{i}.pdf')
+
+    def magic(self):
+        from PySysRem import source_lc, sysrem
+        info = ascii.read(self.pars['path2save'] + '/Time.txt', delimiter='\t', fast_reader=False, guess=False)
+        time = info['JD']
+        bad = np.array([1, 4, 5, 9])
+        if not os.path.exists(self.pars['path2save'] + '/sysrem'):
+            os.makedirs(self.pars['path2save'] + '/sysrem')
+        for i in range(len(self.pars["apertures"])):
+            mag = np.genfromtxt(self.pars['path2save'] + f'/Mag{i}.txt')
+            m_err = np.genfromtxt(self.pars['path2save'] + f'/Mag_err{i}.txt')
+            flag = np.zeros(len(time))
+            flag[bad] = 1
+            source_list = []
+            for k in range(len(mag[0, :])):
+                source = source_lc.Source(mag[:, k], m_err[:, k], time, flag,
+                                          f"{self.pars['path2save']}/sysrem/sysrem_out{i}_{k}.txt")
+                source_list.append(source)
+            sysrem.sys_rem(source_list)
+
+    def draw_magic_curve(self):
+        from matplotlib import pyplot as plt
+        info = np.genfromtxt(f"{self.pars['path2save']}/sysrem/sysrem_out0_0.sys_rem.txt", skip_header=True)
+        fig, ax = plt.subplots(1, 1, figsize=(7, 3), dpi=125)  # 3, 1, figsize=(6, 7), dpi=125
+        zero = int(info[0][0])
+        date = aTime(info[0][0], format='jd').strftime("%y-%m-%d")
+        std = np.round(np.nanstd(info[:, 1]), 4)
+        ax.errorbar(info[:, 0] - zero, info[:, 1], info[:, 2], fmt='b.', markersize=3, zorder=2,
+                    linewidth=0.5, label=f'Target, magic, std = {std}')
+        ax.set_ylabel('mag', fontsize=6)
+        ax.invert_yaxis()
+        locs = ax.get_xticks()
+        t = aTime(locs, format='jd')
+        fig.suptitle(f'Correcting systematic effects\nObservation date: {date}', fontsize=8)
+        x_ticks_labels = []
+        for x in t:
+            x_ticks_labels.append(str('{:.2f}'.format(x.tdb.jd)))
+        ax.legend(fontsize=6)
+        ax.tick_params(axis='both', labelsize=6, direction='in')
+        ax.set_xticklabels(x_ticks_labels, fontsize=5)
+        ax.grid()
+        ax.set_xlabel('JD - ' + str(zero), fontsize=6)
+        plt.savefig(self.pars['path2save'] + f'/magic_plot_{date}.pdf')
 
     def plot_field(self):
         from matplotlib import pyplot as plt
@@ -328,30 +420,65 @@ class UCDPhot(object):
         # plt.show()
         fig.savefig('field.pdf')
 
-    def do_astrometry(self, **kwargs):
+    @staticmethod
+    def do_astrometry(astrometry_net_API: str, path2images: str, **kwargs):
+        """
+
+        :param path2images : str
+            path to fits files
+        :param astrometry_net_API:
+        :param kwargs:
+            path2image : str or Path object
+                Path to the image
+
+            radius : float
+                radius of search
+            isFITS : Bool
+            fast_star_mask : list-like
+                mask of stars, the position of which does not match the catalog
+            xy_centroids : list-like
+                List of xy-coordinate of source positions
+            scale_lower : float
+            scale_upper : float
+
+        :return:
+        """
         from astroquery.astrometry_net import AstrometryNet
-        print('working on ', os.path.split(kwargs.get('path2image', None))[1])
-        hdu_list = fits.open(kwargs.get('path2image', None), 'update', memmap=False)
-        header = hdu_list[0].header.copy()
-        if header['CD1_1'] is None:
-            hdu_list.close()
-            return
-        else:
-            ast = AstrometryNet()
-            ast.api_key = self.pars['astrometry.net_API']
+        from glob import glob
+        list_of_image = glob(path2images + r'\*.f*s')
+        if len(list_of_image) == 0:
+            list_of_image = glob(path2images + r'\*.fit')
+        ast = AstrometryNet()
+        ast.api_key = astrometry_net_API
+        upper = 4.7
+        lower = 4.5
+        r = Angle('0.1d')
+        solve_timeout = 60
+        for image in list_of_image:
+            print('working on', os.path.split(image)[1])
+            hdu_list = fits.open(image, 'update', memmap=False)
+            header = hdu_list[0].header.copy()
+
+            try:
+                if header['CD1_1']:
+                    hdu_list.close()
+                    print('Astrometry has already been done')
+                    continue
+            except KeyError:
+                pass
+
             try_again = True
             submission_id = None
             wcs_header = None
-            r = Angle('0.11d')
-            dec = Angle(header['CURDEC'] + ' degrees')
             ra = Angle(header['CURRA'] + ' hours')
-            upper = 4.7
-            lower = 4.5
+            dec = Angle(header['CURDEC'] + ' degrees')
+            # ra = Angle('346.630599704 hours')
+            # dec = Angle('-5.05873408781 degrees')
             if kwargs.get('isFITS', False):
                 while try_again:
                     try:
                         if not submission_id:
-                            wcs_header = ast.solve_from_image(kwargs.get('path2image', None),
+                            wcs_header = ast.solve_from_image(image,
                                                               submission_id=submission_id, solve_timeout=250,
                                                               center_ra=ra.degree, center_dec=dec.degree,
                                                               radius=kwargs.get('radius', r.degree),
@@ -360,7 +487,7 @@ class UCDPhot(object):
                                                               scale_upper=kwargs.get('scale_upper', upper),
                                                               publicly_visible='n', parity=2)
                         else:
-                            wcs_header = ast.monitor_submission(submission_id, solve_timeout=250)
+                            wcs_header = ast.monitor_submission(submission_id, solve_timeout=solve_timeout)
                     except TimeoutError as e:
                         print('Timeout')
                         submission_id = e.args[1]
@@ -370,12 +497,15 @@ class UCDPhot(object):
                 while try_again:
                     try:
                         if not submission_id:
-
                             data = hdu_list[0].data.copy()
                             hdu_list.verify('fix')
-                            sources = get_center(data)
-                            wcs_header = ast.solve_from_source_list(sources['xcentroid'], sources['ycentroid'],
+                            sources = kwargs.get('xy_centroids', get_center(data))
+                            if kwargs.get('fast_star_mask'):
+                                sources = np.delete(sources, kwargs.get('fast_star_mask'))
+                            wcs_header = ast.solve_from_source_list(sources['xcentroid'],
+                                                                    sources['ycentroid'],
                                                                     header['NAXIS1'], header['NAXIS2'],
+                                                                    downsample_factor=2,
                                                                     center_ra=ra.degree, center_dec=dec.degree,
                                                                     radius=r.degree,
                                                                     scale_units='arcminwidth', scale_type='ul',
@@ -383,17 +513,18 @@ class UCDPhot(object):
                                                                     scale_upper=kwargs.get('scale_upper', upper),
                                                                     publicly_visible='n', parity=2)
                         else:
-                            wcs_header = ast.monitor_submission(submission_id, solve_timeout=250)
-                    except TimeoutError as e:
+                            wcs_header = ast.monitor_submission(submission_id, solve_timeout=solve_timeout)
+                    except:
                         print('Timeout')
-                        submission_id = e.args[1]
+                        # submission_id = e.args[1]
+                        continue
                     else:
                         try_again = False
             if wcs_header:
                 hdu_list[0].header = header + wcs_header
                 hdu_list.close()
-                shutil.move(kwargs.get('path2image', None), os.path.split(kwargs.get('path2image', None))[0] + '/done/')
+                shutil.move(image, os.path.split(image)[0] + '/done/')
                 print('done')
             else:
-                print('astrometry solve fails')
                 hdu_list.close()
+                print('astrometry solve fails')

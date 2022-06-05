@@ -17,6 +17,30 @@ from photutils.detection import DAOStarFinder
 warnings.simplefilter("ignore")
 
 
+# def create_table_of_color(cat):
+#     my_cat = Table()
+#     position = SkyCoord(ra=ra * u.degree, dec=dec * u.degree, frame='icrs')
+#     # print('position ', position.ra.hms, position.dec.dms)
+#     angle = Angle(r * u.deg)
+#     v = Vizier(columns=['RAJ2000', 'DEJ2000',
+#                         'Jmag', 'e_Jmag', "+_r"],
+#                # column_filters={'Jmag': '>0', 'Jmag': '<' + str(j_lim)})
+#                column_filters={'Jmag': '<' + str(j_lim)})
+#     v.ROW_LIMIT = 150
+#     vizier_result = v.query_region(position, radius=angle, catalog=[cat])
+#     if len(vizier_result) != 0:
+#         vizier_stars = vizier_result[0]
+#         #        print(vizier_stars.info())
+#         my_cat['ID'] = arange(0, len(vizier_stars), 1, 'int16')
+#         my_cat['Ra'] = vizier_stars['RAJ2000']
+#         my_cat['Dec'] = vizier_stars['DEJ2000']
+#         my_cat['Dist'] = vizier_stars['_r']
+#         my_cat['J'] = vizier_stars['Jmag']
+#         my_cat['J_err'] = vizier_stars['e_Jmag']
+#     else:
+#         print('I can\'t found the stars near the target\n')
+#     return my_cat
+
 def get_2mass(ra, dec, r, j_lim, cat):
     my_cat = Table()
     position = SkyCoord(ra=ra * u.degree, dec=dec * u.degree, frame='icrs')
@@ -101,39 +125,42 @@ def get_center(data, mask=None):
     # Sort sources in ascending order
     sources.sort('flux')
     sources.reverse()
-    # if len(sources) > 30:
-    #     sources = sources[:30]
     return sources
 
-##################################################################
-# calculate center of mass
-# def centroid(R1, R2, R3, arr):
-#     # total = 0.
-#     Ry = arr.shape[0] / 2
-#     Rx = arr.shape[1] / 2
-#
-#     # mask
-#     X_index = np.arange(0, arr.shape[1], 1)  # index array
-#     Y_index = np.arange(0, arr.shape[0], 1)  # index array
-#     distance = np.sqrt(np.power(np.ones(arr.shape) * (X_index[None, :] - Rx), 2) + np.power(
-#         np.ones(arr.shape) * (Y_index[:, None] - Ry), 2))  # distance array
-#
-#     # mean sky
-#     annulus_mask = np.copy(distance)
-#     annulus_mask[annulus_mask < R2] = 0.
-#     annulus_mask[annulus_mask > R3] = 0.
-#     annulus_mask[annulus_mask > 0] = 1.
-#     masked = arr * annulus_mask
-#     MSky = np.median(masked[np.nonzero(masked)])
-#     MSky = np.nan_to_num(MSky)
-#
-#     # centroid
-#     # aperture_mask = np.copy(distance)
-#     distance[distance <= R1] = 1.
-#     distance[distance > R1] = 0.
-#     masked = arr * distance
-#     total = np.sum(masked)
-#
-#     X = np.sum(masked * X_index[None, :]) / total
-#     Y = np.sum(masked * Y_index[:, None]) / total
-#     return X - arr.shape[1] / 2, Y - arr.shape[0] / 2, MSky
+
+def read_condition(Path):
+    dir_content = os.listdir(Path)
+    Info = Table()
+
+    MJD_AVG = []
+    TEMP_SKY = []
+    TEMP_AIR = []
+    PRESS = []
+    WIND_DIR = []
+    WIND = []
+    RH = []
+    for f in dir_content:
+        if f.count('.fit') or f.count('.fits') or f.count('.fts'):
+            hdulist = pyfits.open(Path + '/' + f)
+            # Data = hdulist[0].data
+            Header = hdulist[0].header
+            hdulist.close()
+
+            MJD_AVG.append(Header['MJD-AVG'])
+            TEMP_SKY.append(Header['TEMP_SKY'])
+            TEMP_AIR.append(Header['TEMP_AIR'])
+            PRESS.append(Header['PRESS'])
+            WIND_DIR.append(Header['WIND_DIR'])
+            WIND.append(Header['WIND'])
+            RH.append(Header['RH'])
+
+    Info['MJD-AVG'] = MJD_AVG
+    Info['TEMP_SKY'] = TEMP_SKY
+    Info['TEMP_AIR'] = TEMP_AIR
+    Info['PRESS'] = PRESS
+    Info['WIND_DIR'] = WIND_DIR
+    Info['WIND'] = WIND
+    Info['RH'] = RH
+    Info['MJD-AVG'] = Info['MJD-AVG'] + 2400000.5 - 2459105
+    # print(Info.info)
+    ascii.write(Info, f'{Path}_report\Info.dat', delimiter='\t', overwrite=True)

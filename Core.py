@@ -1,5 +1,3 @@
-import shutil
-
 import astropy.io.fits as fits
 from astropy.io import ascii
 from astropy.stats import SigmaClip, sigma_clipped_stats
@@ -7,7 +5,8 @@ from astropy.time import Time as aTime
 from astropy.wcs import WCS
 from photutils import Background2D, MedianBackground, CircularAperture, aperture_photometry, centroids
 from tqdm import tqdm
-
+from matplotlib import pyplot as plt
+from astropy.stats import sigma_clip
 from Utils import *
 
 
@@ -60,6 +59,7 @@ class UCDPhot(object):
             self.pars['path2save'] = path2data[:-1] + '_report'
         else:
             self.pars['path2save'] = path2data + '_report'
+        # make folder
         if not os.path.exists(self.pars['path2save']):
             os.makedirs(self.pars['path2save'])
 
@@ -108,7 +108,8 @@ class UCDPhot(object):
         df.write('DATE-OBS\tJD\tHJD\tBJD_TDB\t' +
                  'EXPTIME\tFILTER\tAIRMASS\tTEMP_SKY\t' +
                  'TEMP_AIR\tPRESSURE\t' +
-                 'X_TARGET\tY_TARGET\n')
+                 'X_TARGET\tY_TARGET\tSKY\n')
+        # from scipy import ndimage as nd
         with tqdm(total=len(images_paths), desc='aperture_photometry') as bar:
             print()
             for file_path in images_paths:
@@ -119,6 +120,8 @@ class UCDPhot(object):
                 info = get_header_info(header)
                 hdu_list.close()
 
+                # image_data = nd.median_filter(image_data, size=4)
+
                 df.write(info[4].datetime.isoformat(timespec='milliseconds')  # DATE-OBS
                          + '\t' + '{:.7f}'.format(info[4].jd) + '\t')  # JD
                 df.write('{:.7f}'.format(info[5]) + '\t' + '{:.7f}'.format(info[6]) + '\t')  # HJD BJD
@@ -128,7 +131,7 @@ class UCDPhot(object):
                 df.write('{:.1f}'.format(header['TEMP_SKY']) + '\t')  # TEMP_SKY
                 df.write('{:.1f}'.format(header['TEMP_AIR']) + '\t')  # TEMP_AIR
                 df.write('{:.1f}'.format(header['PRESS']) + '\t')  # pressure
-                # df.write(str(info[2]) + '\t' + str(info[3]) + '\n')  # X_Shift Y_Shift
+                # df.write(str(info[2]) + '\t' + str(info[3]) + '\t')  # X_Shift Y_Shift
 
                 # make WCS object
                 wcs_object = WCS(header)
@@ -136,7 +139,7 @@ class UCDPhot(object):
                 # founding xy coords of the stars on frame
                 stars_xy_coords = wcs_object.all_world2pix(catalog['Ra'], catalog['Dec'], 0)
 
-                df.write(str(stars_xy_coords[0][0]) + '\t' + str(stars_xy_coords[1][0]) + '\n')  # X_target Y_target
+                df.write(str(stars_xy_coords[0][0]) + '\t' + str(stars_xy_coords[1][0]) + '\t')  # X_target Y_target
 
                 bad_stars_x_mask = np.where((stars_xy_coords[0] < self.pars["image_edge"] / 10) |
                                             (stars_xy_coords[0] > (image_data.shape[1] -
@@ -164,6 +167,7 @@ class UCDPhot(object):
 
                 image_data = image_data - background_object.background
                 signal_sky = background_object.background_rms_median
+                df.write('{:.1f}'.format(background_object.background_median) + '\n')  # sky
 
                 stars_centroids = centroids.centroid_sources(image_data,
                                                              xpos=stars[:, 0],
@@ -237,54 +241,121 @@ class UCDPhot(object):
         humidity = np.interp(time_s.tdb.jd, water_time.tdb.jd, water_data)
         np.savetxt(self.pars['path2save'] + '/humidity.txt', humidity, fmt='%.1f', delimiter='\t')
 
-    def draw_curve(self):
-        from matplotlib import pyplot as plt
-
+    def draw_curve(self, planet='c'):
+        import numpy.ma as ma
+        # import copy
         time = ascii.read(self.pars['path2save'] + '/Time.txt', delimiter='\t', fast_reader=False, guess=False)
-        # Info = ascii.read(f'{self.pars["path2save"]}Info.dat', delimiter='\t')
+        Info = ascii.read(f'{self.pars["path2save"]}/Info.dat', delimiter='\t')
         zero = int(time['JD'][0])
         date = time['DATE-OBS'][0].split('T')[0]
+        humidity = np.genfromtxt(self.pars['path2save'] + '/humidity.txt')
+        gs_kw = dict(height_ratios=[10, 10, 10, 7, 7, 7, 6, 6, 5, 10])
+        delta = get_delta_transit(time['JD'] - zero, planet)
         for i in range(len(self.pars["apertures"])):
             raw_magn = np.genfromtxt(self.pars['path2save'] + f'/Mag{i}.txt')
+            m = sigma_clip(raw_magn[:, 0])
+            raw_magn = med_filt(raw_magn)
             raw_merr = np.genfromtxt(self.pars['path2save'] + f'/Mag_err{i}.txt')
-            std = np.round(np.nanstd(raw_magn[:, 0]), 4)
-
-            fig, ax = plt.subplots(3, 1, figsize=(6, 4), sharex=True, sharey=False, dpi=125)
+            std = np.round(np.nanstd(m), 4)
+            fig, ax = plt.subplots(10, 1, figsize=(6, 14), sharex=True, sharey=False, gridspec_kw=gs_kw, dpi=125,
+                                   constrained_layout=True)
             r = self.pars['apertures'][i]
 
-            fig.suptitle(f'Photometry report. Radius aperture = {r} pix\nObservation date: {date}', fontsize=8)
-            ax[0].errorbar(time['JD'] - zero, raw_magn[:, 0], raw_merr[:, 0], fmt='b.', markersize=3, zorder=2,
-                           linewidth=0.5, label=f'Target, std = {std}')
+            # fig.suptitle(f'Photometry report. Radius aperture = {r} pix\nObservation date: {date}', fontsize=8)
+
+            ax[0].errorbar(time['JD'][:] - zero, m, raw_merr[:, 0], fmt='b.',
+                           markersize=3, zorder=2, linewidth=0.5, label=f'Target, std = {std}, aperture = {r} pix')
             ax[0].set_ylabel('mag', fontsize=6)
             ax[0].invert_yaxis()
+            ax[0].legend(fontsize=6, loc=3)
+            ax[0].tick_params(axis='both', labelsize=6, direction='in')
+            # ax[0].set_xticklabels(x_ticks_labels, fontsize=5)
+            ax[0].grid()
+
+            sub_ax = ax[0].twinx()
+            sub_ax.plot(time['JD'] - zero, Info['TEMP_SKY'], 'r--', label='Температура неба',
+                        markersize=3, zorder=1, linewidth=0.5)
+            sub_ax.set_ylabel(r'$T_{sky}$,' + ' \N{DEGREE SIGN}C', fontsize=6)
+            sub_ax.legend(fontsize=6, loc=0)
+            sub_ax.tick_params(axis='both', labelsize=6, direction='in')
+
             for item in range(1, 6):
                 star_std = np.round(np.nanstd(raw_magn[:, item]), 4)
                 if star_std < 0.1:
                     ax[1].plot(time['JD'] - zero, raw_magn[:, item], '.',
                                label=f'Star #{item}, std = {star_std}', markersize=3)
+                    break
             ax[1].set_ylabel('mag', fontsize=6)
             ax[1].invert_yaxis()
-
             magic = np.genfromtxt(f"{self.pars['path2save']}/sysrem/sysrem_out{i}_0.sys_rem.txt", skip_header=True)
+            magic = ma.masked_equal(magic, 1)
+            magic = ma.mask_rows(magic)
             magic_std = np.round(np.nanstd(magic[:, 1]), 4)
+            SN = np.round(np.mean(1.0857 / magic[:, 2]), 4)
+
             ax[2].errorbar(magic[:, 0] - zero, magic[:, 1], magic[:, 2], fmt='b.', markersize=3, zorder=2,
-                           linewidth=0.5, label=f'Correcting linear systematic effects, std = {magic_std}')
+                           linewidth=0.5, label=f'Correcting linear systematic effects, std = {magic_std}, S/N = {SN}')
             ax[2].set_ylabel('mag', fontsize=6)
             ax[2].invert_yaxis()
 
-            # ax[6].plot(time['JD'] - zero, time['TEMP_AIR'], label='Температура воздуха, \N{DEGREE SIGN}C')
-            # ax[6].set_ylabel('T', fontsize=6)
+            ax_fake_transit = ax[2].twinx()
+            ax_fake_transit.errorbar(time['JD'] - zero, m +
+                                     delta*np.mean(m),
+                                     raw_merr[:, 0], fmt='r--', label='Модель транзита')
+            ax_fake_transit.invert_yaxis()
+            ax_fake_transit.set_ylabel('mag', fontsize=6)
+            ax_fake_transit.legend(fontsize=6, loc=4)
+            ax_fake_transit.tick_params(axis='both', labelsize=6, direction='in')
 
-            # ax[7].plot(time['JD'] - zero, time['PRESSURE'], label='Давление, мм. рт. ст.')
-            # ax[7].set_ylabel('Pressure', fontsize=6)
+            ax[3].plot(time['JD'] - zero, Info['TEMP_AIR'], label='Температура воздуха')
+            ax[3].set_ylabel(r'$T_{air}$,' + ' \N{DEGREE SIGN}C', fontsize=6)
+
+            press_ax = ax[3].twinx()
+            press_ax.plot(time['JD'] - zero, Info['PRESS'], 'r--', label='Давление воздуха')
+            press_ax.set_ylabel('P, мм. рт. ст.', fontsize=6)
+            press_ax.legend(fontsize=6, loc=4)
+            press_ax.tick_params(axis='both', labelsize=6, direction='in')
+
+            ax[4].plot(time['JD'] - zero, Info['RH'], label='Относительная влажность')
+            ax[4].set_ylabel('Humidity, %', fontsize=6)
+            ax[4].legend(fontsize=6, loc=3)
+            ax[4].tick_params(axis='both', labelsize=6, direction='in')
+            ax[4].grid()
+
+            ax_pwv = ax[4].twinx()
+            ax_pwv.plot(time['JD'] - zero, humidity, 'r--', label='Осаждённая влага')
+            ax_pwv.set_ylabel('Precipitable Water, мм', fontsize=6)
+            ax_pwv.legend(fontsize=6, loc=0)
+            ax_pwv.tick_params(axis='both', labelsize=6, direction='in')
+
+            ax[5].plot(time['JD'] - zero, time['AIRMASS'], label='Воздушная масса')
+            ax[5].set_ylabel('airmass', fontsize=6)
+
+            ax[6].plot(time['JD'] - zero, Info['WIND_DIR'], label='Направление ветра')
+            ax[6].set_ylabel('WIND_DIR, \N{DEGREE SIGN}', fontsize=6)
+
+            ax[7].plot(time['JD'] - zero, Info['WIND'], label='Скорость ветра')
+            ax[7].set_ylabel('WIND, м/с', fontsize=6)
+
+            ax[8].plot(time['JD'] - zero, time['X_TARGET'] - np.mean(time['X_TARGET']),
+                       'r.', label='X Shift', markersize=3)
+            ax[8].plot(time['JD'] - zero, time['Y_TARGET'] - np.mean(time['Y_TARGET']),
+                       'b.', label='Y Shift', markersize=3)
+            ax[8].legend(loc=0, fontsize=6)
+            ax[8].set_ylabel('Shift, pix', fontsize=6)
+
+            ax[9].plot(time['JD'] - zero, time['SKY'], '.', label='Сигнал фона неба', markersize=3)
+            ax[9].set_ylabel('Sky, ADU', fontsize=6)
 
             locs = ax[0].get_xticks()
             t = aTime(locs, format='jd')
             x_ticks_labels = []
             for x in t:
                 x_ticks_labels.append(str('{:.2f}'.format(x.tdb.jd)))
-            for a in ax:
-                a.legend(fontsize=6)
+            for a in ax[1:]:
+                if a == ax[4]:
+                    continue
+                a.legend(fontsize=6, loc=0)
                 a.tick_params(axis='both', labelsize=6, direction='in')
                 a.set_xticklabels(x_ticks_labels, fontsize=5)
                 a.grid()
@@ -295,18 +366,19 @@ class UCDPhot(object):
     def draw_condition(self):
         from matplotlib import pyplot as plt
         from astropy.time import Time as aTime
+        # read_condition(self.pars['path2data'])
         Info = ascii.read(f'{self.pars["path2save"]}/Info.dat', delimiter='\t')
         time = ascii.read(f'{self.pars["path2save"]}/Time.txt', delimiter='\t', fast_reader=False, guess=False)
         humidity = np.genfromtxt(self.pars['path2save'] + '/humidity.txt')
         zero = int(time['JD'][0])
         date = time['DATE-OBS'][0].split('T')[0]
-        gs_kw = dict(height_ratios=[10, 10, 7, 7, 7, 7, 6, 6, 5])
-        fig, ax = plt.subplots(9, 1, figsize=(6, 10), sharex=True, sharey=False, gridspec_kw=gs_kw, dpi=125,
+        gs_kw = dict(height_ratios=[10, 10, 7, 7, 7, 7, 6, 6, 5, 10])
+        fig, ax = plt.subplots(10, 1, figsize=(6, 12), sharex=True, sharey=False, gridspec_kw=gs_kw, dpi=125,
                                constrained_layout=True)
 
         fig.suptitle(f'Condition report\nObservation date: {date}', fontsize=8)
 
-        ax[0].plot(time['JD'] - zero, Info['TEMP_SKY'],  label='Температура неба, \N{DEGREE SIGN}C')
+        ax[0].plot(time['JD'] - zero, Info['TEMP_SKY'], label='Температура неба, \N{DEGREE SIGN}C')
         ax[0].set_ylabel(r'$T_{sky}$', fontsize=6)
 
         ax[1].plot(time['JD'] - zero, Info['TEMP_AIR'], label='Температура воздуха, \N{DEGREE SIGN}C')
@@ -315,7 +387,7 @@ class UCDPhot(object):
         ax[2].plot(time['JD'] - zero, Info['RH'], label='Относительная влажность, %')
         ax[2].set_ylabel('Humidity', fontsize=6)
 
-        ax[3].plot(time['JD'] - zero, humidity, label='Осаждённая влага, ?')
+        ax[3].plot(time['JD'] - zero, humidity, label='Осаждённая влага, мм')
         ax[3].set_ylabel('Precipitable Water', fontsize=6)
 
         ax[4].plot(time['JD'] - zero, time['AIRMASS'], label='Воздушная масса')
@@ -335,6 +407,9 @@ class UCDPhot(object):
         ax[8].legend(loc=0, fontsize=6)
         ax[8].set_ylabel('shift (pix)', fontsize=6)
 
+        ax[9].plot(time['JD'] - zero, time['SKY'], '.', label='Sky signal (ADU)', markersize=3)
+        ax[9].set_ylabel('Sky, ADU', fontsize=6)
+
         locs = ax[0].get_xticks()
         t = aTime(locs, format='jd')
         x_ticks_labels = []
@@ -349,16 +424,32 @@ class UCDPhot(object):
         # plt.show()
         plt.savefig(f'{self.pars["path2save"]}\condition_{date}.pdf')
 
-    def magic(self):
+    def magic(self, planet='c'):
         from PySysRem import source_lc, sysrem
+        import copy
         info = ascii.read(self.pars['path2save'] + '/Time.txt', delimiter='\t', fast_reader=False, guess=False)
         time = info['JD']
         bad = np.array([1, 4, 5, 9])
+
+        delta_transit = get_delta_transit(time, planet)
+
+        # plt.plot(time, fake_curve)
+        # plt.grid()
+        # plt.gca().invert_yaxis()
+        # plt.show()
+
         if not os.path.exists(self.pars['path2save'] + '/sysrem'):
             os.makedirs(self.pars['path2save'] + '/sysrem')
         for i in range(len(self.pars["apertures"])):
-            mag = np.genfromtxt(self.pars['path2save'] + f'/Mag{i}.txt')
+            mag = copy.deepcopy(np.genfromtxt(self.pars['path2save'] + f'/Mag{i}.txt'))
+            mag[:, 0] = sigma_clip(mag[:, 0])
+            mean = np.mean(mag[:, 0])
+            mag[:, 0] = mag[:, 0] + delta_transit * mean
             m_err = np.genfromtxt(self.pars['path2save'] + f'/Mag_err{i}.txt')
+            # plt.errorbar(time, mag[:, 0], m_err[:, 0])
+            # plt.grid()
+            # plt.gca().invert_yaxis()
+            # plt.savefig('last_raw.pdf')
             flag = np.zeros(len(time))
             flag[bad] = 1
             source_list = []
@@ -366,7 +457,7 @@ class UCDPhot(object):
                 source = source_lc.Source(mag[:, k], m_err[:, k], time, flag,
                                           f"{self.pars['path2save']}/sysrem/sysrem_out{i}_{k}.txt")
                 source_list.append(source)
-            sysrem.sys_rem(source_list)
+            sysrem.sys_rem(source_list, len_lin_ef=1)
 
     # def draw_magic_curve(self):
     #     from matplotlib import pyplot as plt
@@ -391,6 +482,47 @@ class UCDPhot(object):
     #     ax.grid()
     #     ax.set_xlabel('JD - ' + str(zero), fontsize=6)
     #     plt.savefig(self.pars['path2save'] + f'/magic_plot_{date}.pdf')
+
+    def read_condition(self):
+        # from astropy.io import ascii, fits
+        dir_content = os.listdir(self.pars['path2data'])
+        Info = Table()
+
+        MJD_AVG = []
+        TEMP_SKY = []
+        TEMP_AIR = []
+        PRESS = []
+        WIND_DIR = []
+        WIND = []
+        RH = []
+        for f in dir_content:
+            if f.count('.fit') or f.count('.fits') or f.count('.fts'):
+                hdulist = fits.open(self.pars['path2data'] + '/' + f)
+                # Data = hdulist[0].data
+                Header = hdulist[0].header
+                hdulist.close()
+                exp = TimeDelta(Header['EXPTIME'], format='sec')
+                t = Time(Header['DATE-OBS'], format='fits')
+                t = t + exp / 2.
+
+                MJD_AVG.append(t.mjd)
+                TEMP_SKY.append(Header['TEMP_SKY'])
+                TEMP_AIR.append(Header['TEMP_AIR'])
+                PRESS.append(Header['PRESS'])
+                WIND_DIR.append(Header['WIND_DIR'])
+                WIND.append(Header['WIND'])
+                RH.append(Header['RH'])
+
+        Info['MJD-AVG'] = MJD_AVG
+        Info['TEMP_SKY'] = TEMP_SKY
+        Info['TEMP_AIR'] = TEMP_AIR
+        Info['PRESS'] = PRESS
+        Info['WIND_DIR'] = WIND_DIR
+        Info['WIND'] = WIND
+        Info['RH'] = RH
+        Info['MJD-AVG'] = Info['MJD-AVG'] + 2400000.5 - 2459105
+        # print(Info.info)
+        ascii.write(Info, f'{self.pars["path2save"]}\Info.dat', delimiter='\t', overwrite=True)
 
     def plot_field(self):
         from matplotlib import pyplot as plt
@@ -470,13 +602,13 @@ class UCDPhot(object):
             list_of_image = glob(path2images + r'\*.fit')
         ast = AstrometryNet()
         ast.api_key = astrometry_net_API
-        upper = 4.7
-        lower = 4.4
+        upper = 4.8
+        lower = 4.3
         r = Angle('0.054d')
         # print(r.degree)
         solve_timeout = 60
-        for image in list_of_image:
-            print('working on', os.path.split(image)[1])
+        for count, image in enumerate(list_of_image):
+            print('working on', os.path.split(image)[1], str(np.round(count * 100 / len(list_of_image), 2)), '%')
             hdu_list = fits.open(image, 'update', memmap=False)
             header = hdu_list[0].header.copy()
 
@@ -491,13 +623,13 @@ class UCDPhot(object):
             try_again = True
             submission_id = None
             wcs_header = None
-            # ra = Angle(header['CURRA'] + ' hours')
-            # dec = Angle(header['CURDEC'] + ' degrees')
+            ra = Angle(header['CURRA'] + ' hours')
+            dec = Angle(header['CURDEC'] + ' degrees')
             # print(ra.degree)
             # print(dec.degree)
 
-            ra = Angle('346.632 degrees')
-            dec = Angle('-5.054 degrees')
+            # ra = Angle('346.632 degrees')
+            # dec = Angle('-5.054 degrees')
             if kwargs.get('isFITS', False):
                 while try_again:
                     try:
@@ -549,7 +681,7 @@ class UCDPhot(object):
             if wcs_header:
                 hdu_list[0].header = header + wcs_header
                 hdu_list.close()
-                shutil.move(image, os.path.split(image)[0] + '/done/')
+                # shutil.move(image, os.path.split(image)[0] + '/done/')
                 print('done')
             else:
                 hdu_list.close()

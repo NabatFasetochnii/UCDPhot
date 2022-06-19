@@ -13,33 +13,43 @@ from astropy.time import Time, TimeDelta
 from astroquery.vizier import Vizier
 from numpy import arange
 from photutils.detection import DAOStarFinder
+from scipy.signal import medfilt
 
 warnings.simplefilter("ignore")
 
 
-# def create_table_of_color(cat):
-#     my_cat = Table()
-#     position = SkyCoord(ra=ra * u.degree, dec=dec * u.degree, frame='icrs')
-#     # print('position ', position.ra.hms, position.dec.dms)
-#     angle = Angle(r * u.deg)
-#     v = Vizier(columns=['RAJ2000', 'DEJ2000',
-#                         'Jmag', 'e_Jmag', "+_r"],
-#                # column_filters={'Jmag': '>0', 'Jmag': '<' + str(j_lim)})
-#                column_filters={'Jmag': '<' + str(j_lim)})
-#     v.ROW_LIMIT = 150
-#     vizier_result = v.query_region(position, radius=angle, catalog=[cat])
-#     if len(vizier_result) != 0:
-#         vizier_stars = vizier_result[0]
-#         #        print(vizier_stars.info())
-#         my_cat['ID'] = arange(0, len(vizier_stars), 1, 'int16')
-#         my_cat['Ra'] = vizier_stars['RAJ2000']
-#         my_cat['Dec'] = vizier_stars['DEJ2000']
-#         my_cat['Dist'] = vizier_stars['_r']
-#         my_cat['J'] = vizier_stars['Jmag']
-#         my_cat['J_err'] = vizier_stars['e_Jmag']
-#     else:
-#         print('I can\'t found the stars near the target\n')
-#     return my_cat
+def get_delta_transit(time, planet):
+    from pytransit import RoadRunnerModel
+    tm = RoadRunnerModel('power-2')
+    tm.set_data(time=time)
+
+    # TRAPPIST-1c
+    if planet == 'c':
+        k = 0.08440
+        ldc = np.array([0.1, 0.0])
+        p = 2.421937
+        a = 28.549
+        i = np.deg2rad(89.778)
+        e = 0.00654
+        w = np.deg2rad(282.45)
+    elif planet == 'b':
+        k = 0.08590
+        ldc = np.array([0.1, 0.0])
+        p = 1.510826
+        a = 20.843
+        i = np.deg2rad(89.728)
+        e = 0.00622
+        w = np.deg2rad(336.86)
+    else:
+        print('\"planet\" can only be b or c')
+        return
+    fake_curve = tm.evaluate_ps(t0=np.median(time), k=k, ldc=ldc, p=p, a=a, i=i, e=e, w=w)
+    return 1 - fake_curve
+
+
+def med_filt(D):
+    return medfilt(D, [3, 1])
+
 
 def get_2mass(ra, dec, r, j_lim, cat):
     my_cat = Table()
@@ -89,8 +99,9 @@ def get_header_info(header):
     t = t + exp / 2.
 
     obj = coord.SkyCoord(ra.degree, dec.degree, unit=(u.deg, u.deg), frame='icrs')
-    site = coord.EarthLocation.from_geodetic(lon=header['LONGITUD'],
-                                             lat=header['LATITUD'], height=header['ELEVAT'])
+    # site = coord.EarthLocation.from_geodetic(lon=header['LONGITUD'],
+    #                                          lat=header['LATITUD'], height=header['ELEVAT'])
+    site = coord.EarthLocation.from_geodetic(lon=42.6675, lat=43.73611, height=2112.0)
 
     frame = coord.AltAz(obstime=t, location=site)
     obj_frame = obj.transform_to(frame)
@@ -119,48 +130,10 @@ def get_center(data, mask=None):
         mask = np.zeros(data.shape, dtype=bool)
         mask[90:110, 0:data.shape[1]] = True  # only for ASTRONIRCAM
 
-    daofind = DAOStarFinder(fwhm=4.5, threshold=5. * Bkg_sigma, sharplo=0.25)
+    daofind = DAOStarFinder(fwhm=6.5, threshold=10. * Bkg_sigma, sharplo=0.25)
     sources = daofind(data, mask=mask)
 
     # Sort sources in ascending order
     sources.sort('flux')
     sources.reverse()
     return sources
-
-
-def read_condition(Path):
-    dir_content = os.listdir(Path)
-    Info = Table()
-
-    MJD_AVG = []
-    TEMP_SKY = []
-    TEMP_AIR = []
-    PRESS = []
-    WIND_DIR = []
-    WIND = []
-    RH = []
-    for f in dir_content:
-        if f.count('.fit') or f.count('.fits') or f.count('.fts'):
-            hdulist = pyfits.open(Path + '/' + f)
-            # Data = hdulist[0].data
-            Header = hdulist[0].header
-            hdulist.close()
-
-            MJD_AVG.append(Header['MJD-AVG'])
-            TEMP_SKY.append(Header['TEMP_SKY'])
-            TEMP_AIR.append(Header['TEMP_AIR'])
-            PRESS.append(Header['PRESS'])
-            WIND_DIR.append(Header['WIND_DIR'])
-            WIND.append(Header['WIND'])
-            RH.append(Header['RH'])
-
-    Info['MJD-AVG'] = MJD_AVG
-    Info['TEMP_SKY'] = TEMP_SKY
-    Info['TEMP_AIR'] = TEMP_AIR
-    Info['PRESS'] = PRESS
-    Info['WIND_DIR'] = WIND_DIR
-    Info['WIND'] = WIND
-    Info['RH'] = RH
-    Info['MJD-AVG'] = Info['MJD-AVG'] + 2400000.5 - 2459105
-    # print(Info.info)
-    ascii.write(Info, f'{Path}_report\Info.dat', delimiter='\t', overwrite=True)
